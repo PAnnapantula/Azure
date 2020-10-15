@@ -1,0 +1,69 @@
+@companies = 
+	EXTRACT 	CompanyName		string,
+			AnnualCustomers	int,
+			NetIncome		int,
+			CompanyType		string,
+			YearFounded		DateTime
+	FROM "adl://datalakestorage11.azuredatalakestore.net/inputdata/Company_Comparison2.csv"
+	USING Extractors.Csv();
+
+@employees = 
+	EXTRACT		Employee		string,
+			Username		string,
+			EmailAddress	string,
+			Race			string,
+			JobTitle		string,
+			JoinDate		string,
+			CompanyName		string
+	FROM "adl://datalakestorage11.azuredatalakestore.net/inputdata/Employee_Comparison1.csv"
+	USING Extractors.Csv();
+
+//Join
+@employeeDetailsPerCompany = //go through and do it manually on excel
+	SELECT e.Employee, e.JobTitle,e.JoinDate, e.Race, e.CompanyName, c.CompanyType
+	FROM @companies AS c
+	LEFT OUTER JOIN (SELECT Employee, JobTitle, JoinDate, Race, CompanyName FROM @employees) AS e
+	ON c.CompanyName == e.CompanyName;
+
+//Aggregation/GroupBy
+@totalDiverse = 
+	SELECT @employeeDetailsPerCompany.CompanyName, COUNT(@employeeDetailsPerCompany.Employee) AS DiverseCount
+	FROM @employeeDetailsPerCompany
+	WHERE Race != "White"
+	GROUP BY @employeeDetailsPerCompany.CompanyName
+	HAVING COUNT(@employeeDetailsPerCompany.Employee) != 0;
+
+@total = 
+	SELECT @employeeDetailsPerCompany.CompanyName, COUNT(@employeeDetailsPerCompany.Employee) AS TotalCount
+	FROM @employeeDetailsPerCompany
+	GROUP BY @employeeDetailsPerCompany.CompanyName
+	HAVING COUNT(@employeeDetailsPerCompany.Employee) != 0;
+
+@fraction =
+	SELECT @totalDiverse.CompanyName, @totalDiverse.DiverseCount, @total.TotalCount, ((float)@totalDiverse.DiverseCount/(float)@total.TotalCount) AS DivFraction
+	FROM @totalDiverse
+	CROSS JOIN @total //look for other joins
+	WHERE @totalDiverse.CompanyName == @total.CompanyName;
+
+@diversityPercent = 
+	SELECT @totalDiverse.CompanyName, ((@fraction.DivFraction)*100) AS divPercent
+	FROM @totalDiverse
+	CROSS JOIN @fraction
+	WHERE @totalDiverse.CompanyName == @fraction.CompanyName;
+
+//Set
+@diversityUnion = 
+	SELECT * FROM @diversityPercent
+	OUTER UNION BY NAME ON (CompanyName)
+	SELECT * FROM @fraction;
+
+//Window
+@ordering = 
+	SELECT *, ROW_NUMBER() OVER (PARTITION BY DiverseCount) AS RowNumber
+	FROM @diversityUnion;
+
+OUTPUT @ordering 
+    TO @"adl://datalakestorage11.azuredatalakestore.net/outputdata/CompanyDomainRaceData3.csv"
+    USING Outputters.Csv(outputHeader:true);
+
+
